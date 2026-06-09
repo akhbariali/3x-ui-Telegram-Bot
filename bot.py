@@ -656,10 +656,8 @@ async def handle_free_trial(query, data, user_id, context: ContextTypes.DEFAULT_
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     # Determine trial size
-    if data == "free_1gb":
-        gb_amount = 1
-    elif data == "free_5gb":
-        gb_amount = 5
+    if data == "free_100MB":
+        gb_amount = 0.1
     else:
         await query.edit_message_text("گزینه نامعتبر.", reply_markup=reply_markup)
         return

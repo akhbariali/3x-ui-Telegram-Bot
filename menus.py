@@ -57,12 +57,12 @@ def _format_price_toman(amount):
 
 # Free trial plans
 def get_free_trial_keyboard():
+    # return [
+    #     [InlineKeyboardButton("درحال حاضر فعال نمیباشد", callback_data="back_to_main")],
+    # ]
     return [
-        [InlineKeyboardButton("درحال حاضر فعال نمیباشد", callback_data="back_to_main")],
-    ]
-    return [
-        [InlineKeyboardButton("🎁 دریافت 1GB رایگان تست یک روزه(تنها یکبار)", callback_data="free_1gb")],
-        [InlineKeyboardButton("🎁 دریافت 5GB رایگان تست یک هفته ای (تنها یکبار)", callback_data="free_5gb")]
+        [InlineKeyboardButton("🎁 دریافت 1GB رایگان تست یک روزه(تنها یکبار)", callback_data="free_100MB")],
+        # [InlineKeyboardButton("🎁 دریافت 5GB رایگان تست یک هفته ای (تنها یکبار)", callback_data="free_5gb")]
     ]
 
 # Regular VPN plans keyboard

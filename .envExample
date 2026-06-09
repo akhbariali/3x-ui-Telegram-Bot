@@ -16,3 +16,4 @@ BOT_ID=vpnbot
 VLESS_TEXT=type=xhttp&encryption=none&path=%2F&host=qq.ir&mode=auto&security=tls
 SUB_PATH=sub
 SUB_PORT=8443
+USE_ONE_MONTH_MODE=false
