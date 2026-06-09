@@ -665,7 +665,7 @@ async def handle_free_trial(query, data, user_id, context: ContextTypes.DEFAULT_
     # Check if user has already used this trial
     if check_trial_usage(user_id, gb_amount):
         await query.edit_message_text(
-            f"❗ شما قبلاً از هدیه {gb_amount}GB استفاده کرده‌اید.",
+            f"❗ شما قبلاً از هدیه 100 MB استفاده کرده‌اید.",
             reply_markup=reply_markup
         )
         return
