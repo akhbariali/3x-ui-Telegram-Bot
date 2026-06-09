@@ -1343,7 +1343,9 @@ async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(
             f"مبلغ {_format_wallet_amount(wallet_amount)} ثبت شد.\n"
             "اکنون فیش پرداخت را ارسال کنید."
+            f"{get_payment_msg()}",
         )
+
         return
 
     if user_id in ADMIN_IDS and context.user_data.get("awaiting_service_policy_max_gb"):
