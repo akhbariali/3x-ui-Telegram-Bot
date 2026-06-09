@@ -1341,8 +1341,8 @@ async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['awaiting_wallet_topup_amount'] = False
         context.user_data['awaiting_wallet_topup_receipt'] = True
         await update.message.reply_text(
-            f"مبلغ {_format_wallet_amount(wallet_amount)} ثبت شد.\n\n"
-            "اکنون فیش پرداخت را ارسال کنید.\n"
+            f"مبلغ {_format_wallet_amount(wallet_amount)} ثبت شد.\n"
+            "اکنون فیش پرداخت را ارسال کنید.\n\n"
             f"{get_payment_msg()}",
         )
 
