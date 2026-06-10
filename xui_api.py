@@ -123,16 +123,23 @@ def get_client_status(email):
         logger.error(f"Error parsing client status: {e}")
         return None
 
-def create_client(email, total_gb, expiry_time_ms):
+def _expiry_time_ms(duration):
+    if isinstance(duration, timedelta):
+        return int((datetime.now() + duration).timestamp() * 1000)
+    return int(duration)
+
+
+def create_client(email, total_gb, expiry_time_ms=None):
     """Create a new client in the XUI panel"""
     if not ensure_authenticated():
         return None, "Failed to login to XUI panel"
 
     client_id = str(uuid.uuid4())
     total_gb = int(total_gb)
-    if USE_ONE_MONTH_MODE:
-        expiry_time_ms = int((datetime.now() + timedelta(days=30)).timestamp() * 1000)
-
+    if expiry_time_ms is None:
+        expiry_time_ms = _expiry_time_ms(timedelta(days=31))
+    else:
+        expiry_time_ms = _expiry_time_ms(expiry_time_ms)
 
     settings = {
         "clients": [
@@ -213,15 +220,23 @@ def extend_client(email, client_id, additional_gb, new_expiry_time_ms=None):
 
     # Calculate new total GB
     current_total_gb = client_status['total_gb']
+    if current_total_gb == 0 and additional_gb > 0:
+        return False, "نمیتوان به پلن نامحدود حجم اضافه کرد"
+
     new_total_gb = current_total_gb + additional_gb
     total_bytes = int(new_total_gb * (1024 ** 3))  # Convert GB to bytes
 
-    if USE_ONE_MONTH_MODE:
+    if isinstance(new_expiry_time_ms, timedelta):
         current_expiry = datetime.fromtimestamp((client_status.get('expiry_time_ms')) / 1000)
-        expiry_time_ms = int((current_expiry + timedelta(days=30)).timestamp() * 1000)
+        if current_expiry > datetime.now():
+            expiry_time = current_expiry + new_expiry_time_ms
+        else:
+            expiry_time = datetime.now() + new_expiry_time_ms
+        expiry_time_ms = int(expiry_time.timestamp() * 1000)
+    elif new_expiry_time_ms is None:
+        expiry_time_ms = _expiry_time_ms(timedelta(days=31))
     else:
-        expiry_time_ms = int(new_expiry_time_ms)
-
+        expiry_time_ms = _expiry_time_ms(new_expiry_time_ms)
 
     # Prepare the settings for client update
     settings = {

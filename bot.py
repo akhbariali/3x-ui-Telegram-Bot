@@ -110,17 +110,17 @@ def _format_wallet_amount(amount):
 
 
 def _format_price_toman(amount):
-    """Format numeric amount with thousands separators and append 'تومن'."""
+    """Format numeric amount with thousands separators and append 'تومان'."""
     try:
         n = float(amount)
     except Exception:
-        return str(amount) + " تومن"
+        return str(amount) + " تومان"
 
     if n.is_integer():
         s = f"{int(n):,}"
     else:
         s = f"{n:,.2f}".rstrip('0').rstrip('.')
-    return f"{s} تومن"
+    return f"{s} تومان"
 
 
 def _build_referral_link(user_id, bot_username=None):
@@ -225,8 +225,6 @@ async def _fulfill_order_with_wallet(query, user_id, context, order):
         )
         return False
 
-    policy = get_service_policy()
-
     try:
         if order['kind'] == 'extension':
             email = order['email']
@@ -236,33 +234,26 @@ async def _fulfill_order_with_wallet(query, user_id, context, order):
             if not status:
                 raise Exception("خطا در دریافت اطلاعات سرویس فعلی")
 
-            if policy['max_config_gb'] > 0 and status['total_gb'] + plan_gb > policy['max_config_gb']:
-                raise Exception(f"تمدید از محدودیت {policy['max_config_gb']} گیگابایت بیشتر می‌شود")
-
-            success, error_msg = extend_client(email, client_id, plan_gb, policy['global_expiry_time_ms'])
+            success, error_msg = extend_client(email, client_id, plan_gb, timedelta(days=31))
             if not success:
                 raise Exception(f"خطا در تمدید سرویس: {error_msg}")
 
             if not update_config_total_gb(email, user_id, plan_gb):
                 logger.warning(f"Failed to update database for wallet extension {email}")
 
-            vless_link = generate_vless_link(client_id, email)
             sub_link = generate_sub_link(status['subId'])
             adjust_wallet_balance(user_id, -cost)
             await query.edit_message_text(
                 f"✅ تمدید شما با کیف پول انجام شد.\n\n"
                 f"مبلغ کسر شده: {_format_wallet_amount(cost)}\n"
                 f"موجودی باقی‌مانده: {_format_wallet_amount(get_wallet_balance(user_id))}\n\n"
-                f"🔗 لینک کانفیگ شما:\n`{vless_link}`"
-                f"🔗 لینک سابسکریپشن :\n {sub_link}",
+                f"🔗 لینک سابسکریپشن شما:\n`{sub_link}`",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup(get_back_to_main_button())
             )
             return True
         else:
             plan_gb = float(order['gb'])
-            if policy['max_config_gb'] > 0 and plan_gb > policy['max_config_gb']:
-                raise Exception(f"پلن از محدودیت {policy['max_config_gb']} گیگابایت بیشتر است")
 
             client_id = str(uuid.uuid4())
             suffix = random_suffix()
@@ -273,22 +264,22 @@ async def _fulfill_order_with_wallet(query, user_id, context, order):
                 email = f"u{user_id}_{suffix}@vpn"
 
             total_bytes = int(round(plan_gb * (1024 ** 3)))
-            expiry_time = policy['global_expiry_time_ms']
 
-            client_id, error = create_client(email, total_bytes, expiry_time)
+            client_id, error = create_client(email, total_bytes, timedelta(days=31))
             if error:
                 raise Exception(f"خطا در ایجاد کانفیگ: {error}")
 
             save_new_config(user_id, email, client_id, plan_gb)
             referral_applied, referrer_user_id, commission_amount = credit_referral_bonus_if_first_service_purchase(user_id, cost)
             adjust_wallet_balance(user_id, -cost)
-            vless_link = generate_vless_link(client_id, email)
+            status = get_client_status(email)
+            sub_link = generate_sub_link(status['subId']) if status and status.get('subId') else generate_sub_link(client_id)
 
             await query.edit_message_text(
                 f"✅ پرداخت با کیف پول انجام شد!\n\n"
                 f"مبلغ کسر شده: {_format_wallet_amount(cost)}\n"
                 f"موجودی باقی‌مانده: {_format_wallet_amount(get_wallet_balance(user_id))}\n\n"
-                f"🔗 لینک کانفیگ:\n`{vless_link}`",
+                f"🔗 لینک سابسکریپشن شما:\n`{sub_link}`",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup(get_back_to_main_button())
             )
@@ -297,7 +288,7 @@ async def _fulfill_order_with_wallet(query, user_id, context, order):
                     await context.bot.send_message(
                         chat_id=referrer_user_id,
                         text=(
-                            f"🎉 یک عضو جدید با دعوت شما اولین خرید خود را انجام داد.\n"
+                            f"🎉 یک عضو جدید با دعوت شما خرید خود را انجام داد.\n"
                             f"{_format_price_toman(commission_amount)} به کیف پول شما اضافه شد."
                         )
                     )
@@ -325,12 +316,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     get_or_create_user(user.id, user.username, user.first_name, user.last_name, referrer_user_id=referrer_user_id)
 
     welcome_message = (
-        "گزینه مورد نظر را انتخاب کنید\n"
-        "این سرویس به تازگی راه اندازی شده است و درحال حاضر صرفا جهت تست قرار داده شده.\n"
-        "امیدوارم کیفیت لطفا نظرات خود را با ما در میان بگذارید."
+        " به ربات freebox خوش آمدید\n"
+        "پلن نامحدود تک کاربره و پلن های حجمی چند کاربره هستند\n"
+        "گزینه ی مورد نظر خود را انتخاب کنید:"
     )
     if referrer_user_id:
-        welcome_message += "\n\nدعوت شما ثبت شد و در اولین خرید این کاربر، پورسانت به کیف پول شما اضافه می‌شود."
+        welcome_message += "\n\nدعوت شما ثبت شد و در خرید این کاربر، پورسانت به کیف پول شما اضافه می‌شود."
 
     await update.message.reply_text(welcome_message, reply_markup=get_main_menu_keyboard())
 
@@ -340,12 +331,12 @@ async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     get_or_create_user(user.id, user.username, user.first_name, user.last_name)
     policy = get_service_policy()
-    referral_percent = policy.get("referral_commission_percent", 20)
+    referral_percent = policy.get("referral_commission_percent", 10)
     referral_link = _build_referral_link(user.id, getattr(context.bot, "username", None))
 
     await update.message.reply_text(
         f"لینک دعوت شما:\n{referral_link}\n\n"
-        f"پورسانت فعلی برای اولین خرید هر عضو جدید: {referral_percent:g}%",
+        f"پورسانت فعلی برای خرید هر عضو جدید: {referral_percent:g}%",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="back_to_main")]])
     )
 
@@ -471,7 +462,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     else:
         logger.warning(f"Unhandled callback data: {data}")
-        await query.edit_message_text("گزینه نامعت��ر.")
+        await query.edit_message_text("گزینه نامعتبر.")
 
 async def show_main_menu(query):
     """Show the main menu"""
@@ -494,12 +485,12 @@ async def show_wallet_menu(query, user_id):
 async def show_referral_info(query, user_id, context: ContextTypes.DEFAULT_TYPE):
     """Show the user's referral link and current commission rate."""
     policy = get_service_policy()
-    referral_percent = policy.get("referral_commission_percent", 20)
+    referral_percent = policy.get("referral_commission_percent", 10)
     referral_link = _build_referral_link(user_id, getattr(context.bot, "username", None))
 
     await query.edit_message_text(
         f"لینک دعوت شما:\n{referral_link}\n\n"
-        f"برای اولین خرید هر عضو جدید، {referral_percent:g}% از مبلغ خرید به کیف پول شما افزوده می‌شود.",
+        f"برای خرید هر عضو جدید، {referral_percent:g}% از مبلغ خرید به کیف پول شما افزوده می‌شود.",
         reply_markup=InlineKeyboardMarkup(get_back_to_main_button())
     )
 
@@ -567,7 +558,7 @@ async def handle_show_status(query, email, user_id):
     client_id = get_client_id_by_email(email, user_id)
 
     if not client_id:
-        await query.edit_message_text("خطا در دریافت اطلاعات سر��یس." ,
+        await query.edit_message_text("خطا در دریافت اطلاعات سرویس." ,
                                       reply_markup=InlineKeyboardMarkup(get_back_to_main_button()))
         return
 
@@ -578,7 +569,6 @@ async def handle_show_status(query, email, user_id):
 
     update_config_active_status(email, user_id, status['is_active'])
 
-    vless_link = generate_vless_link(client_id, email)
     sub_link = generate_sub_link(status['subId'])
     status_icon = "✅" if status['is_active'] else "❌"
     message = (
@@ -587,8 +577,7 @@ async def handle_show_status(query, email, user_id):
         f"📊 حجم باقیمانده: {status['remaining_gb']} گیگابایت از {status['total_gb']} گیگابایت\n"
         f"⏳ زمان باقیمانده: {status['remaining_time_display']} (تا {status['expiry_date']})\n"
         f"🔌 وضعیت: {'فعال' if status['is_active'] else 'غیرفعال'}\n\n"
-        f"🔗 لینک کانفیگ:\n`{vless_link}` \n"
-        f"🔗 لینک سابسکریپشن :\n {sub_link}"
+        f"🔗 لینک سابسکریپشن شما:\n`{sub_link}`"
     )
 
     reply_markup = get_config_status_keyboard()
@@ -596,18 +585,12 @@ async def handle_show_status(query, email, user_id):
 
 async def handle_buy_service(query, user_id):
     """Handle the buy service option"""
-    policy = get_service_policy()
-    keyboard = get_vpn_plans_keyboard(policy) + get_back_to_main_button()
+    keyboard = get_vpn_plans_keyboard() + get_back_to_main_button()
     reply_markup = InlineKeyboardMarkup(keyboard)
-    max_config_gb = policy.get("max_config_gb", 0)
-    if not max_config_gb:
-        max_config_label = "نامحدود"
-    else:
-        val = int(max_config_gb) if float(max_config_gb).is_integer() else max_config_gb
-        max_config_label = f"{val} گیگ"
 
     await query.edit_message_text(
-        f"لطفاً پلن مورد نظر خود را انتخاب کنید.\n هر کانفیگ حداکثر به مقدار {max_config_label} قابل شارژ است",
+        "لطفاً پلن مورد نظر خود را انتخاب کنید.\n"
+        "هر سرویس به مدت 31 روز فعال خواهد بود.",
         reply_markup=reply_markup,
     )
 
@@ -631,20 +614,12 @@ async def handle_plan_selection(query, plan_data, user_id, context: ContextTypes
         reply_markup = InlineKeyboardMarkup(get_back_to_main_button())
         await query.edit_message_text("فروش فعال نیست.", reply_markup=reply_markup)
         return
-    policy = get_service_policy()
+
     plan_key = plan_data[len("plan_"):]
-    plan = build_vpn_plans(policy).get(plan_key)
+    plan = build_vpn_plans().get(plan_key)
     if not plan:
         reply_markup = InlineKeyboardMarkup(get_back_to_main_button())
         await query.edit_message_text("پلن نامعتبر است.", reply_markup=reply_markup)
-        return
-
-    if policy['max_config_gb'] > 0 and float(plan.get('gb', 0)) > policy['max_config_gb']:
-        reply_markup = InlineKeyboardMarkup(get_back_to_main_button())
-        await query.edit_message_text(
-            f"❗ حجم این پلن از محدودیت {policy['max_config_gb']}GB بیشتر است.",
-            reply_markup=reply_markup,
-        )
         return
 
     order = _build_order('service', plan['name'], plan['gb'], plan['price'], 'buy_service', plan_key=plan_key)
@@ -680,28 +655,18 @@ async def handle_free_trial(query, data, user_id, context: ContextTypes.DEFAULT_
         email = f"u{user_id}_{suffix}@free_{gb_amount}_gb"
 
     total_bytes = gb_amount * 1024 ** 3
-    policy = get_service_policy()
-
-    if policy['max_config_gb'] > 0 and gb_amount > policy['max_config_gb']:
-        await query.edit_message_text(
-            f"❗ حجم این هدیه از محدودیت {policy['max_config_gb']}GB بیشتر است.",
-            reply_markup=reply_markup
-        )
-        return
-
-    # Set expiry time based on trial type
-    expiry_time = policy['global_expiry_time_ms']
 
     try:
-        client_id, error = create_client(email, total_bytes, expiry_time)
+        client_id, error = create_client(email, total_bytes, timedelta(days=1))
         if error:
             raise Exception(error)
 
         save_new_config(user_id, email, client_id, gb_amount)
-        vless_link = generate_vless_link(client_id, email)
+        status = get_client_status(email)
+        sub_link = generate_sub_link(status['subId']) if status and status.get('subId') else generate_sub_link(client_id)
 
         await query.edit_message_text(
-            f"🎉 هدیه شما آماده شد!\n\n🔗 لینک کانفیگ:\n`{vless_link}`",
+            f"🎉 هدیه شما آماده شد!\n\n🔗 لینک سابسکریپشن شما:\n`{sub_link}`",
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
@@ -969,7 +934,7 @@ async def show_service_policy(query):
     policy = get_service_policy()
     max_config_gb = policy.get("max_config_gb", 0)
     max_config_text = "نامحدود" if not max_config_gb else f"{max_config_gb:g} گیگ"
-    referral_percent = policy.get("referral_commission_percent", 20)
+    referral_percent = policy.get("referral_commission_percent", 10)
 
     message = (
         "📜 تنظیمات سرویس\n\n"
@@ -1031,7 +996,7 @@ async def prompt_service_policy_referral_percent(query, context: ContextTypes.DE
     context.user_data.pop("awaiting_service_policy_max_gb", None)
     context.user_data.pop("awaiting_service_policy_expiry_date", None)
 
-    referral_percent = policy.get("referral_commission_percent", 20)
+    referral_percent = policy.get("referral_commission_percent", 10)
 
     await query.edit_message_text(
         f"پورسانت فعلی دعوت: {referral_percent:g}%\n\n"
@@ -1678,7 +1643,7 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
     payment_record = get_payment_record(payment_id)
 
     if not payment_record or payment_record['status'] != 'pending':
-        await query.answer("پرداخت یافت نشد یا قبلاً پردازش ��ده است.")
+        await query.answer("پرداخت یافت نشد یا قبلاً پردازش شده است.")
         return
 
     user_id = payment_record['user_id']
@@ -1689,7 +1654,6 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
     plan_gb = float(payment_record['plan_gb'] or 0)
     if plan_gb <= 0:
         plan_gb = _parse_plan_gb(plan_name)
-    policy = get_service_policy()
 
     if payment_type == 'wallet_topup':
         success, new_balance = adjust_wallet_balance(user_id, payment_amount)
@@ -1701,6 +1665,9 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
             )
             return
 
+        # Credit referral bonus for wallet topup
+        referral_applied, referrer_user_id, commission_amount = credit_referral_bonus_if_first_service_purchase(user_id, payment_amount)
+
         update_payment_status(payment_id, 'approved')
         await context.bot.send_message(
             chat_id=user_id,
@@ -1711,6 +1678,17 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
             ),
             reply_markup=InlineKeyboardMarkup(get_back_to_main_button())
         )
+        if referral_applied and referrer_user_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=referrer_user_id,
+                    text=(
+                        f"✅ پورسانت دعوت شما به مبلغ {commission_amount:g} تومان به کیف پول شما اضافه شد."
+                    ),
+                )
+            except Exception:
+                logger.exception("Failed to notify referrer %s", referrer_user_id)
+
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=f"کیف پول کاربر {user_id} با موفقیت شارژ شد.",
@@ -1733,11 +1711,8 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
             if not status:
                 raise Exception("خطا در دریافت اطلاعات سرویس فعلی")
 
-            if policy['max_config_gb'] > 0 and status['total_gb'] + plan_gb > policy['max_config_gb']:
-                raise Exception(f"تمدید از محدودیت {policy['max_config_gb']} گیگابایت بیشتر می‌شود")
-
             # Extend the client service
-            success, error_msg = extend_client(extension_email, extension_client_id, plan_gb, policy['global_expiry_time_ms'])
+            success, error_msg = extend_client(extension_email, extension_client_id, plan_gb, timedelta(days=31))
 
             if not success:
                 raise Exception(f"خطا در تمدید سرویس: {error_msg}")
@@ -1750,8 +1725,6 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
             # Update payment status to approved
             update_payment_status(payment_id, 'approved')
 
-            # Generate VLESS link
-            vless_link = generate_vless_link(extension_client_id, extension_email)
             sub_link = generate_sub_link(status['subId'])
             # Notify the user about their approved extension
             await context.bot.send_message(
@@ -1759,7 +1732,6 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
                 text=f"✅ درخواست تمدید شما تأیید شد!\n\n"
                      f"حجم {plan_gb} گیگابایت به سرویس شما اضافه شد\n"
                      f"تاریخ انقضا به تاریخ سراسری تنظیم شد\n\n"
-                     f"🔗 لینک کانفیگ شما:\n`{vless_link}`"
                      f"🔗 لینک سابسکریپشن شما:\n`{sub_link}`",
 
                 parse_mode="Markdown",
@@ -1773,8 +1745,9 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
             )
         else:
             # Handle new service creation (existing logic)
-            if policy['max_config_gb'] > 0 and plan_gb > policy['max_config_gb']:
-                raise Exception(f"پلن از محدودیت {policy['max_config_gb']} گیگابایت بیشتر است")
+            policy = get_service_policy()
+            # We keep the policy object available for compatibility,
+            # but service duration and rules are handled centrally.
 
             # Create unique identifiers for the new client
             client_id = str(uuid.uuid4())
@@ -1790,10 +1763,9 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
 
             # Calculate configuration details
             total_bytes = int(round(plan_gb * (1024 ** 3)))  # Convert GB to bytes
-            expiry_time = policy['global_expiry_time_ms']
 
             # Create the client on the VPN server
-            client_id, error = create_client(email, total_bytes, expiry_time)
+            client_id, error = create_client(email, total_bytes, timedelta(days=31))
 
             if error:
                 raise Exception(f"خطا در ایجاد کانفیگ: {error}")
@@ -1805,14 +1777,16 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
             # Update payment status to approved
             update_payment_status(payment_id, 'approved')
 
-            # Generate VPN connection link
-            vless_link = generate_vless_link(client_id, email)
+            status = get_client_status(email)
+            if not status:
+                raise Exception("خطا در دریافت اطلاعات سرویس پس از ایجاد کانفیگ")
+            sub_link = generate_sub_link(status['subId'])
 
             # Notify the user about their approved payment and send config
             await context.bot.send_message(
                 chat_id=user_id,
                 text=f"✅ پرداخت شما تأیید شد!\n\n"
-                     f"🔗 لینک کانفیگ:\n`{vless_link}`",
+                     f"🔗 لینک سابسکریپشن شما:\n`{sub_link}`",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup(get_back_to_main_button())
             )
@@ -1822,7 +1796,7 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
                     await context.bot.send_message(
                         chat_id=referrer_user_id,
                         text=(
-                            f"🎉 دعوت شما باعث اولین خرید یک عضو جدید شد.\n"
+                            f"🎉 دعوت شما باعث خرید یک عضو جدید شد.\n"
                             f"{_format_price_toman(commission_amount)} به کیف پول شما اضافه شد."
                         )
                     )
@@ -1998,49 +1972,48 @@ async def show_extend_options(query, context: ContextTypes.DEFAULT_TYPE):
     # Store the email in context for the extend handler
     context.user_data['extending_email'] = email
 
-    # Create keyboard with extension options
-    keyboard = get_vpn_extend_plans_keyboard(email)
+    current_total_gb = None
+    for config in get_user_configs(query.from_user.id):
+        if config[1] == email:
+            current_total_gb = float(config[3])
+            break
+
+    # Create keyboard with extension options; infinite plans only allow time extension
+    keyboard = get_vpn_extend_plans_keyboard(email, current_total_gb=current_total_gb)
 
     await query.edit_message_text(
-        "لطفاً میزان افزایش حجم را انتخاب کنید:\n\n"
+        "لطفاً گزینه تمدید را انتخاب کنید:\n\n"
         "بعد از انتخاب، فیش پرداخت خود را ارسال کنید.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def handle_extend_selection(query, data, user_id, context: ContextTypes.DEFAULT_TYPE):
     """Handle the selection of an extension amount"""
-    policy = get_service_policy()
     plan_key = data[len("extend_plan_"):]
-    selected_plan = build_vpn_plans(policy).get(plan_key)
+    selected_plan = build_vpn_plans().get(plan_key)
     if not selected_plan:
         await query.edit_message_text("پلن نامعتبر است.", reply_markup=InlineKeyboardMarkup(get_back_to_main_button()))
         return
 
     gb_amount = float(selected_plan.get('gb', 0))
 
-    if policy['max_config_gb'] > 0:
-        current_total_gb = None
-
-        for config in get_user_configs(user_id):
-            if config[1] == context.user_data.get('extending_email'):
-                current_total_gb = float(config[3])
-                break
-
-        if current_total_gb is not None and current_total_gb + gb_amount > policy['max_config_gb']:
-            reply_markup = InlineKeyboardMarkup(get_back_to_main_button())
-            await query.edit_message_text(
-                f"❗ این تمدید از محدودیت {policy['max_config_gb']}GB بیشتر می‌شود.",
-                reply_markup=reply_markup,
-            )
-            return
-
-    # Check if we have the email in context
     if 'extending_email' not in context.user_data:
         await query.edit_message_text("خطا در بازیابی اطلاعات کانفیگ.", reply_markup=InlineKeyboardMarkup(get_back_to_main_button()))
         return
 
-    email = context.user_data['extending_email']
-    email = email.strip()
+    email = context.user_data['extending_email'].strip()
+    current_total_gb = None
+    for config in get_user_configs(user_id):
+        if config[1] == email:
+            current_total_gb = float(config[3])
+            break
+
+    if current_total_gb == 0 and gb_amount > 0:
+        await query.edit_message_text(
+            "❗ این سرویس نامحدود است و نمی‌توان برای آن حجم اضافه کرد. لطفاً تنها تمدید نامحدود را انتخاب کنید.",
+            reply_markup=InlineKeyboardMarkup(get_back_to_main_button())
+        )
+        return
 
     # Get client_id for the email
     client_id = get_client_id_by_email(email, user_id)
@@ -2048,7 +2021,8 @@ async def handle_extend_selection(query, data, user_id, context: ContextTypes.DE
         await query.edit_message_text("خطا در بازیابی اطلاعات کانفیگ.", reply_markup=InlineKeyboardMarkup(get_back_to_main_button()))
         return
 
-    order = _build_order('extension', f"تمدید {gb_amount:g}GB", gb_amount, selected_plan['price'], f"status_{email}", email=email, client_id=client_id, plan_key=plan_key)
+    order_label = "تمدید نامحدود" if gb_amount == 0 else f"تمدید {gb_amount:g}GB"
+    order = _build_order('extension', order_label, gb_amount, selected_plan['price'], f"status_{email}", email=email, client_id=client_id, plan_key=plan_key)
     await prompt_payment_method(query, context, order)
 
     # Log the extension request

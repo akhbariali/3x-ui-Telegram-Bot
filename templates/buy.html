@@ -18,7 +18,10 @@
       </label>
       <button type="submit">{{ t('buy_service') }}</button>
     </form>
-    <p class="hint">{{ payment_msg }}</p>
+    <div class="hint">
+      <label for="payment-info">شماره کارت یا اطلاعات پرداخت:</label>
+      <input id="payment-info" type="text" value="{{ payment_msg }}" readonly onclick="this.select()" />
+    </div>
   {% endif %}
 </section>
 {% endblock %}

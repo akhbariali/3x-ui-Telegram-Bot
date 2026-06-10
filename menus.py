@@ -24,7 +24,6 @@ def get_days_until_expiry(expiry_time_ms):
 
 def build_vpn_plans(policy=None):
     plans = {}
-    days_until_expiry = get_days_until_expiry((policy or {}).get("global_expiry_time_ms"))
 
     catalog = get_vpn_plans()
     if not catalog:
@@ -32,13 +31,7 @@ def build_vpn_plans(policy=None):
 
     for plan in catalog:
         plan_key = plan["plan_key"]
-        plan_name = plan["name"]
-        if days_until_expiry is not None:
-            plan_name = f"{int(days_until_expiry)} روزه"
-        if USE_ONE_MONTH_MODE:
-            plan_name = "یک ماهه"
-
-        plans[plan_key] = {**plan, "name": plan_name}
+        plans[plan_key] = {**plan, "display_name": plan["name"]}
 
     return plans
 
@@ -47,13 +40,13 @@ def _format_price_toman(amount):
     try:
         n = float(amount)
     except Exception:
-        return str(amount) + " تومن"
+        return str(amount) + " تومان"
 
     if n.is_integer():
         s = f"{int(n):,}"
     else:
         s = f"{n:,.2f}".rstrip('0').rstrip('.')
-    return f"{s} تومن"
+    return f"{s} تومان"
 
 # Free trial plans
 def get_free_trial_keyboard():
@@ -70,7 +63,10 @@ def get_vpn_plans_keyboard(policy=None):
     plans = build_vpn_plans(policy)
     keyboard = []
     for plan_key, plan in plans.items():
-        label = f"{plan['name']} | {plan['gb']:g} گیگ | {_format_price_toman(plan['price'])}"
+        if plan['gb'] > 0:
+            label = f"{plan['display_name']} | {plan['gb']:g} گیگ | {_format_price_toman(plan['price'])}"
+        else:
+            label = f"{plan['display_name']} | {_format_price_toman(plan['price'])}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"plan_{plan_key}")])
 
     if not keyboard:
@@ -79,11 +75,15 @@ def get_vpn_plans_keyboard(policy=None):
     return keyboard
 
 
-def get_vpn_extend_plans_keyboard(email, policy=None):
-    plans = build_vpn_plans(policy)
+def get_vpn_extend_plans_keyboard(email, current_total_gb=None):
+    plans = build_vpn_plans()
     keyboard = []
     for plan_key, plan in plans.items():
-        label = f"➕ {plan['gb']:g} گیگ | {_format_price_toman(plan['price'])}"
+        if current_total_gb == 0 and plan.get('gb', 0) > 0:
+            continue
+
+        gb_label = f"{plan['gb']:g} گیگ" if plan['gb'] > 0 else "نامحدود"
+        label = f"➕ {gb_label} | {_format_price_toman(plan['price'])}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"extend_plan_{plan_key}")])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data=f"status_{email}")])
     return keyboard

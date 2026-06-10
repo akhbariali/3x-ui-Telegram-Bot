@@ -9,10 +9,10 @@ from config import DB_FILE
 logger = logging.getLogger(__name__)
 
 DEFAULT_VPN_PLANS = [
-    {'plan_key': 'gb_1', 'name': '1 GB', 'gb': 1, 'price': 1, 'sort_order': 1},
-    {'plan_key': 'gb_2', 'name': '2 GB', 'gb': 2, 'price': 2, 'sort_order': 2},
-    {'plan_key': 'gb_5', 'name': '5 GB', 'gb': 5, 'price': 5, 'sort_order': 3},
-    {'plan_key': 'gb_10', 'name': '10 GB', 'gb': 10, 'price': 10, 'sort_order': 4},
+    {'plan_key': 'gb_1', 'name': 'پلن یک', 'gb': 10, 'price': 120, 'sort_order': 1},
+    {'plan_key': 'gb_2', 'name': 'پلن دو', 'gb': 20, 'price': 220, 'sort_order': 2},
+    {'plan_key': 'gb_5', 'name': 'پلن سه', 'gb': 30, 'price': 300, 'sort_order': 3},
+    {'plan_key': 'infinity', 'name': 'تک کاربره نامحدود', 'gb': 0, 'price': 400, 'sort_order': 4},
 ]
 
 
@@ -24,18 +24,36 @@ def _generate_plan_key(name):
 
 
 def _seed_default_plans(cursor):
-    cursor.execute('SELECT COUNT(*) FROM vpn_plans')
-    if cursor.fetchone()[0]:
-        return
-
+    # Get all current plan keys
+    allowed_keys = {plan['plan_key'] for plan in DEFAULT_VPN_PLANS}
+    
+    # Deactivate plans not in DEFAULT_VPN_PLANS
+    cursor.execute('SELECT plan_key FROM vpn_plans WHERE is_active = 1')
+    existing_keys = {row[0] for row in cursor.fetchall()}
+    for key in existing_keys - allowed_keys:
+        cursor.execute('UPDATE vpn_plans SET is_active = 0 WHERE plan_key = ?', (key,))
+    
+    # Upsert default plans
     for plan in DEFAULT_VPN_PLANS:
-        cursor.execute(
-            '''
-            INSERT INTO vpn_plans (plan_key, name, gb, price, sort_order, is_active)
-            VALUES (?, ?, ?, ?, ?, 1)
-            ''',
-            (plan['plan_key'], plan['name'], plan['gb'], plan['price'], plan['sort_order'])
-        )
+        cursor.execute('SELECT 1 FROM vpn_plans WHERE plan_key = ?', (plan['plan_key'],))
+        if cursor.fetchone():
+            # Update existing plan
+            cursor.execute(
+                '''
+                UPDATE vpn_plans SET name = ?, gb = ?, price = ?, sort_order = ?, is_active = 1
+                WHERE plan_key = ?
+                ''',
+                (plan['name'], plan['gb'], plan['price'], plan['sort_order'], plan['plan_key'])
+            )
+        else:
+            # Insert new plan
+            cursor.execute(
+                '''
+                INSERT INTO vpn_plans (plan_key, name, gb, price, sort_order, is_active)
+                VALUES (?, ?, ?, ?, ?, 1)
+                ''',
+                (plan['plan_key'], plan['name'], plan['gb'], plan['price'], plan['sort_order'])
+            )
 
 def init_db():
     """Initialize database tables if they don't exist"""
@@ -147,6 +165,10 @@ def init_db():
     cursor.execute(
         'INSERT OR IGNORE INTO app_settings (setting_key, setting_value) VALUES (?, ?)',
         ('global_expiry_date', default_expiry_date)
+    )
+    cursor.execute(
+        'INSERT OR IGNORE INTO app_settings (setting_key, setting_value) VALUES (?, ?)',
+        ('referral_commission_percent', '10')
     )
 
     _seed_default_plans(cursor)
@@ -268,7 +290,7 @@ def get_user_referral_state(user_id):
 
 
 def credit_referral_bonus_if_first_service_purchase(user_id, purchase_amount, commission_percent=None):
-    """Credit the referring user once, on the first approved service purchase."""
+    """Credit the referring user on each approved service purchase."""
     if purchase_amount is None:
         return False, None, 0.0
 
@@ -283,16 +305,16 @@ def credit_referral_bonus_if_first_service_purchase(user_id, purchase_amount, co
     try:
         conn.execute('BEGIN')
         cursor.execute(
-            'SELECT referrer_user_id, COALESCE(referral_bonus_paid, 0) AS referral_bonus_paid FROM users WHERE user_id = ?',
+            'SELECT referrer_user_id FROM users WHERE user_id = ?',
             (user_id,)
         )
         row = cursor.fetchone()
-        if not row or not row['referrer_user_id'] or row['referral_bonus_paid']:
+        if not row or not row['referrer_user_id']:
             conn.rollback()
             return False, None, 0.0
 
         if commission_percent is None:
-            commission_percent = float(get_service_policy().get('referral_commission_percent', 20))
+            commission_percent = float(get_service_policy().get('referral_commission_percent', 10))
         commission_amount = round(amount * float(commission_percent) / 100.0, 2)
 
         if commission_amount <= 0:
@@ -302,10 +324,6 @@ def credit_referral_bonus_if_first_service_purchase(user_id, purchase_amount, co
         cursor.execute(
             'UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + ? WHERE user_id = ?',
             (commission_amount, row['referrer_user_id'])
-        )
-        cursor.execute(
-            'UPDATE users SET referral_bonus_paid = 1 WHERE user_id = ?',
-            (user_id,)
         )
         conn.commit()
         return True, row['referrer_user_id'], commission_amount
@@ -398,7 +416,7 @@ def get_app_settings():
     return {
         'max_config_gb': settings.get('max_config_gb', '0') or '0',
         'global_expiry_date': settings.get('global_expiry_date', default_expiry_date) or default_expiry_date,
-        'referral_commission_percent': settings.get('referral_commission_percent', '20') or '20',
+        'referral_commission_percent': settings.get('referral_commission_percent', '10') or '10',
     }
 
 
@@ -442,20 +460,14 @@ def update_app_settings(max_config_gb=None, global_expiry_date=None, referral_co
 
 
 def get_service_policy():
-    """Return parsed service policy values used by web and bot flows."""
-    settings = get_app_settings()
-    max_config_gb = float(settings['max_config_gb'] or 0)
-    try:
-        expiry_date = datetime.strptime(settings['global_expiry_date'], '%Y-%m-%d')
-    except ValueError:
-        expiry_date = datetime.now() + timedelta(days=30)
-
+    """Return fixed service policy values: 31-day service duration, no volume limit."""
+    expiry_date = datetime.now() + timedelta(days=31)
     expiry_time_ms = int(datetime(expiry_date.year, expiry_date.month, expiry_date.day, 23, 59, 59).timestamp() * 1000)
     return {
-        'max_config_gb': max_config_gb,
+        'max_config_gb': 0,
         'global_expiry_date': expiry_date.strftime('%Y-%m-%d'),
         'global_expiry_time_ms': expiry_time_ms,
-        'referral_commission_percent': float(settings.get('referral_commission_percent', '20') or 20),
+        'referral_commission_percent': 10.0,
     }
 
 

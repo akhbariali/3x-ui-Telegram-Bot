@@ -429,8 +429,9 @@ def free_trial():
         return redirect(url_for("dashboard"))
 
     save_new_config(user_id, email, client_id, gb_amount)
-    vless_link = generate_vless_link(client_id, email)
-    flash(f"Trial created. Config: {vless_link}", "success")
+    status = get_client_status(email)
+    sub_link = generate_sub_link(status['subId']) if status and status.get('subId') else generate_sub_link(client_id)
+    flash(f"Trial created. Subscription: {sub_link}", "success")
     return redirect(url_for("configs_view"))
 
 
@@ -764,11 +765,18 @@ def approve_payment_web(payment_id):
             flash("Unable to charge wallet.", "error")
             return redirect(url_for("admin_pending"))
 
+        referral_applied, referrer_user_id, commission_amount = credit_referral_bonus_if_first_service_purchase(user_id, payment_amount)
+
         update_payment_status(payment_id, "approved")
         flash(
             f"Wallet top-up approved for user {user_id}. New balance: {new_balance:g}",
             "success",
         )
+        if referral_applied and referrer_user_id:
+            flash(
+                f"Referral bonus {commission_amount:g} credited to user {referrer_user_id}.",
+                "success",
+            )
         return redirect(url_for("admin_pending"))
 
     is_extension = payment_type == "extension"
