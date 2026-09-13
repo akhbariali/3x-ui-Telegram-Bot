@@ -8,7 +8,8 @@ import time
 from datetime import datetime, timedelta
 from urllib.parse import quote
 import uuid
-from config import XUI_URL, XUI_USERNAME, XUI_PASSWORD, INBOUND_ID, XUI_API_TOKEN
+import config
+from config import XUI_URL, XUI_USERNAME, XUI_PASSWORD, INBOUND_ID
 
 logger = logging.getLogger(__name__)
 session = requests.Session()
@@ -30,7 +31,10 @@ def login_to_xui(force=False):
     """
     global _session_authenticated, _last_login_time, _csrf_token
 
-    if XUI_API_TOKEN:
+    # Read token at call time so runtime env changes are respected
+    token = getattr(config, 'XUI_API_TOKEN', '')
+    if token:
+        logger.info("XUI_API_TOKEN present — using token auth, skipping cookie login")
         return True
 
     # If already logged in and session is fresh, don't re-login unless forced
@@ -73,8 +77,9 @@ def _api_request(method, path, **kwargs):
         raise RuntimeError("Failed to login to XUI panel")
     for attempt in range(2):
         headers = {"Accept": "application/json"}
-        if XUI_API_TOKEN:
-            headers["Authorization"] = f"Bearer {XUI_API_TOKEN}"
+        token = getattr(config, 'XUI_API_TOKEN', '')
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         elif method != "get":
             if not _csrf_token:
                 csrf = session.get(f"{XUI_URL.rstrip('/')}/csrf-token", timeout=20)
