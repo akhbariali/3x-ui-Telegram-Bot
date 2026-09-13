@@ -23,8 +23,8 @@
           <tr>
             <td>{{ c.email }}</td>
             <td>{{ 'Active' if c.is_active else 'Disabled' }}</td>
-            <td>{{ c.remaining_gb }} GB</td>
-            <td>{{ c.total_gb }} GB</td>
+            <td>{{ 'نامحدود' if c.total_gb == 0 else c.remaining_gb|string + ' GB' }}</td>
+            <td>{{ 'نامحدود' if c.total_gb == 0 else c.total_gb|string + ' GB' }}</td>
             <td>{{ c.remaining_time_display }}</td>
             <td>{{ c.expiry_date }}</td>
             <td><textarea rows="2" readonly>{{ c.vless_link }}</textarea></td>
@@ -33,11 +33,10 @@
             <td colspan="7">
               <form method="post" action="{{ url_for('extend_config_request') }}" class="inline-form">
                 <input type="hidden" name="email" value="{{ c.email }}">
-                <select name="gb_amount" required>
-                  <option value="10">Extend +10GB</option>
-                  <option value="30">Extend +30GB</option>
-                  <option value="40">Extend +40GB</option>
-                  <option value="50">Extend +50GB</option>
+                <select name="plan_key" required>
+                  {% for key, plan in plans.items() %}
+                  <option value="{{ key }}">{{ plan.name }} | {{ plan.price|int }} تومان | ۳۱ روز</option>
+                  {% endfor %}
                 </select>
                 <input type="text" name="receipt" placeholder="{{ t('receipt_hint') }}" required>
                 <button type="submit">{{ t('submit_extension') }}</button>

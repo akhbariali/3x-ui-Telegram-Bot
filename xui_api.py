@@ -6,14 +6,16 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta
+from urllib.parse import quote
 import uuid
-from config import XUI_URL, XUI_USERNAME, XUI_PASSWORD, INBOUND_ID, USE_ONE_MONTH_MODE
+from config import XUI_URL, XUI_USERNAME, XUI_PASSWORD, INBOUND_ID, XUI_API_TOKEN
 
 logger = logging.getLogger(__name__)
 session = requests.Session()
 session.trust_env = False
 _session_authenticated = False
 _last_login_time = 0
+_csrf_token = None
 # Session timeout in seconds (30 minutes)
 SESSION_TIMEOUT = 1800
 
@@ -26,7 +28,10 @@ def login_to_xui(force=False):
     Returns:
         bool: True if login successful, False otherwise
     """
-    global _session_authenticated, _last_login_time
+    global _session_authenticated, _last_login_time, _csrf_token
+
+    if XUI_API_TOKEN:
+        return True
 
     # If already logged in and session is fresh, don't re-login unless forced
     current_time = time.time()
@@ -38,6 +43,7 @@ def login_to_xui(force=False):
     try:
         response = session.post(url, json=data, timeout=20)
         if response.ok and response.json().get("success") is True:
+            _csrf_token = None
             _session_authenticated = True
             _last_login_time = current_time
             logger.info("Successfully logged in to XUI panel")
@@ -60,355 +66,156 @@ def ensure_authenticated():
     # login_to_xui checks both the authentication flag and session age.
     return login_to_xui()
 
-def get_client_status(email):
-    """Get the status of a client by email"""
+def _api_request(method, path, **kwargs):
+    """Call v3 API with Bearer auth or a cookie session and CSRF protection."""
+    global _csrf_token
     if not ensure_authenticated():
-        return None
+        raise RuntimeError("Failed to login to XUI panel")
+    for attempt in range(2):
+        headers = {"Accept": "application/json"}
+        if XUI_API_TOKEN:
+            headers["Authorization"] = f"Bearer {XUI_API_TOKEN}"
+        elif method != "get":
+            if not _csrf_token:
+                csrf = session.get(f"{XUI_URL.rstrip('/')}/csrf-token", timeout=20)
+                csrf.raise_for_status()
+                result = csrf.json()
+                if not result.get("success") or not isinstance(result.get("obj"), str) or not result['obj']:
+                    raise RuntimeError("Could not obtain panel CSRF token")
+                _csrf_token = result['obj']
+            headers["X-CSRF-Token"] = _csrf_token
+        response = getattr(session, method)(
+            f"{XUI_URL.rstrip('/')}{path}", headers=headers, timeout=20, **kwargs)
+        if response.status_code in (401, 403, 404) and attempt == 0 and not XUI_API_TOKEN:
+            if login_to_xui(force=True):
+                continue
+        response.raise_for_status()
+        result = response.json()
+        if result.get('success') is not True:
+            raise RuntimeError(result.get('msg') or "Panel API request failed")
+        return result.get('obj')
 
-    response = session.get(f"{XUI_URL}/panel/api/inbounds/getClientTraffics/{email}")
-    # 3x-ui v2 returns 404 for unauthenticated API requests; retry once.
-    if response.status_code in (401, 404):
-        if login_to_xui(force=True):
-            response = session.get(f"{XUI_URL}/panel/api/inbounds/getClientTraffics/{email}")
-        else:
-            return None
 
-    if not response.ok:
-        return None
+def _status(data):
+    total = int(data.get('total', data.get('totalGB', 0)))
+    used = int(data.get('up', 0)) + int(data.get('down', 0))
+    expiry = int(data.get('expiryTime', 0))
+    remaining = max(0, expiry / 1000 - time.time())
+    days, hours = int(remaining // 86400), int(remaining % 86400 // 3600)
+    display = f"{days} روز و {hours} ساعت" if days else f"{hours} ساعت"
+    return {
+        'email': data.get('email'), 'total_gb': total / 1024 ** 3,
+        'remaining_gb': round(max(0, total - used) / 1024 ** 3, 2),
+        'remaining_days': days, 'remaining_hours': hours,
+        'remaining_time_display': display if expiry > 0 else "نامحدود",
+        'expiry_time_ms': expiry,
+        'expiry_date': datetime.fromtimestamp(expiry / 1000).strftime('%Y-%m-%d') if expiry > 0 else "نامحدود",
+        'is_active': data.get('enable', False), 'subId': data.get('subId'),
+    }
 
+
+def get_client_status(email):
     try:
-        data = response.json().get('obj', {})
-        if not data:
-            return None
-
-        total_bytes = data.get('total', 0)
-        used_bytes = data.get('up', 0) + data.get('down', 0)
-        remaining_bytes = max(0, total_bytes - used_bytes)
-        remaining_gb = round(remaining_bytes / (1024 ** 3), 2)
-
-        expiry_time = data.get('expiryTime', 0) / 1000
-        remaining_seconds = max(0, expiry_time - time.time())
-
-        # Calculate days and hours separately for more precise display
-        remaining_days = int(remaining_seconds // 86400)
-        remaining_hours = int((remaining_seconds % 86400) // 3600)
-
-        # Format the remaining time display
-        if remaining_days > 0:
-            remaining_time_display = f"{remaining_days} روز"
-            if remaining_hours > 0:
-                remaining_time_display += f" و {remaining_hours} ساعت"
-        else:
-            remaining_time_display = f"{remaining_hours} ساعت"
-
-        return {
-            'email': email,
-            'remaining_gb': remaining_gb,
-            'remaining_days': remaining_days,
-            'remaining_hours': remaining_hours,
-            'remaining_time_display': remaining_time_display,
-            'total_gb': round(total_bytes / (1024 ** 3), 2),
-            'expiry_time_ms': int(data.get('expiryTime', 0)),
-            'expiry_date': datetime.fromtimestamp(expiry_time).strftime('%Y-%m-%d'),
-            'is_active': data.get('enable', False),
-            'subId': data.get('subId', None)
-        }
-    except Exception as e:
-        logger.error(f"Error parsing client status: {e}")
+        data = _api_request('get', f"/panel/api/clients/traffic/{quote(email, safe='')}")
+        return _status({**data, 'email': email}) if data else None
+    except Exception as exc:
+        logger.error("Error getting client status: %s", exc)
         return None
 
-<<<<<<< HEAD
+
 def _expiry_time_ms(duration):
     if isinstance(duration, timedelta):
         return int((datetime.now() + duration).timestamp() * 1000)
     return int(duration)
 
 
-def create_client(email, total_gb, expiry_time_ms=None):
-=======
-def _normalize_expiry_time(expiry_time_ms):
-    """Normalize expiry time to a millisecond timestamp.
-
-    If the expiry time is not provided or invalid, use 30 days from now.
-    """
+def create_client(email, total_gb, expiry_time_ms=None, limit_ip=0):
+    """Create a v3 client; total_gb is bytes (zero means unlimited)."""
     try:
-        expiry_time_ms = int(expiry_time_ms)
-    except (TypeError, ValueError):
-        expiry_time_ms = 0
-
-    if expiry_time_ms <= 0:
-        expiry_time_ms = int((datetime.now() + timedelta(days=30)).timestamp() * 1000)
-
-    return expiry_time_ms
-
-
-def create_client(email, total_gb, expiry_time_ms):
->>>>>>> f600afe (authentication problem solved!)
-    """Create a new client in the XUI panel"""
-    if not ensure_authenticated():
-        return None, "Failed to login to XUI panel"
-
-    client_id = str(uuid.uuid4())
-    total_gb = int(total_gb)
-<<<<<<< HEAD
-    if expiry_time_ms is None:
-        expiry_time_ms = _expiry_time_ms(timedelta(days=31))
-    else:
-        expiry_time_ms = _expiry_time_ms(expiry_time_ms)
-=======
-    expiry_time_ms = _normalize_expiry_time(expiry_time_ms)
->>>>>>> f600afe (authentication problem solved!)
-
-    settings = {
-        "clients": [
-            {
-                "id": client_id,
-                "flow": "",
-                "email": email,
-                "limitIp": 0,
-                "totalGB": total_gb,
-                "expiryTime": expiry_time_ms,
-                "enable": True,
-                "tgId": "",
-                "subId": str(uuid.uuid4())[:16],
-                "reset": 0
-            }
-        ]
-    }
-
-    payload = {
-        "id": INBOUND_ID,
-        "settings": json.dumps(settings, ensure_ascii=False)
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
-    try:
-        response = session.post(
-            f"{XUI_URL}/panel/api/inbounds/addClient",
-            headers=headers,
-            json=payload,
-            timeout=20
-        )
-        # 3x-ui v2 returns 404 for unauthenticated API requests; retry once.
-        if response.status_code in (401, 404):
-            if login_to_xui(force=True):
-                response = session.post(
-                    f"{XUI_URL}/panel/api/inbounds/addClient",
-                    headers=headers,
-                    json=payload,
-                    timeout=20
-                )
-
-        response.raise_for_status()
-
-        data = response.json()
-        if not data.get("success"):
-            return None, data.get("msg", "Error adding client")
-
+        client_id = str(uuid.uuid4())
+        payload = {
+            "client": {
+                "id": client_id, "email": email, "flow": "",
+                "limitIp": int(limit_ip), "totalGB": int(total_gb),
+                "expiryTime": _expiry_time_ms(expiry_time_ms if expiry_time_ms is not None else timedelta(days=31)),
+                "enable": True, "tgId": 0, "subId": uuid.uuid4().hex[:16], "reset": 0,
+            },
+            "inboundIds": [INBOUND_ID],
+        }
+        _api_request('post', '/panel/api/clients/add', json=payload)
         return client_id, None
-    except Exception as e:
-        logger.error(f"Error creating client: {e}")
-        return None, str(e)
+    except Exception as exc:
+        logger.error("Error creating client: %s", exc)
+        return None, str(exc)
 
-def extend_client(email, client_id, additional_gb, new_expiry_time_ms=None):
-    """Extend an existing client's quota and/or expiry time
 
-    Args:
-        email (str): Client's email identifier
-        client_id (str): Client's UUID
-        additional_gb (int): Additional GB to add to the client's quota
-        new_expiry_time_ms (int|timedelta|None, optional): New expiry time in milliseconds.
-                           If a timedelta is passed, it is added to the current expiry.
-                           If an integer timestamp is passed, it is used directly.
-
-    Returns:
-        tuple: (success (bool), error_message (str or None))
-    """
-    if not ensure_authenticated():
-        return False, "Failed to login to XUI panel"
-
-    # First get current client data
-    client_status = get_client_status(email)
-    if not client_status:
-        return False, "Could not find client information"
-
-    # Calculate new total GB
-    current_total_gb = client_status['total_gb']
-    if current_total_gb == 0 and additional_gb > 0:
-        return False, "نمیتوان به پلن نامحدود حجم اضافه کرد"
-
-    new_total_gb = current_total_gb + additional_gb
-    total_bytes = int(new_total_gb * (1024 ** 3))  # Convert GB to bytes
-
-    if isinstance(new_expiry_time_ms, timedelta):
-        current_expiry = datetime.fromtimestamp((client_status.get('expiry_time_ms')) / 1000)
-        if current_expiry > datetime.now():
-            expiry_time = current_expiry + new_expiry_time_ms
-        else:
-            expiry_time = datetime.now() + new_expiry_time_ms
-        expiry_time_ms = int(expiry_time.timestamp() * 1000)
-    elif new_expiry_time_ms is None:
-        expiry_time_ms = _expiry_time_ms(timedelta(days=31))
-    else:
-<<<<<<< HEAD
-        expiry_time_ms = _expiry_time_ms(new_expiry_time_ms)
-=======
-        expiry_time_ms = _normalize_expiry_time(new_expiry_time_ms)
-
->>>>>>> f600afe (authentication problem solved!)
-
-    # Prepare the settings for client update
-    settings = {
-        "clients": [
-            {
-                "id": client_id,
-                "flow": "",
-                "email": email,
-                "limitIp": 0,
-                "totalGB": total_bytes,
-                "expiryTime": expiry_time_ms,
-                "enable": True,
-                "tgId": "",
-                "subId": client_id[:16],  # Use part of the client_id for consistency
-                "reset": 0
-            }
-        ]
-    }
-
-    payload = {
-        "id": INBOUND_ID,
-        "settings": json.dumps(settings, ensure_ascii=False)
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
+def extend_client(email, client_id, additional_gb, new_expiry_time_ms=None, limit_ip=None, unlimited=False):
+    """Renew by email, preserving credentials and fields required by v3 replacement updates."""
     try:
-        # Use the updateClient endpoint with the client's UUID
-        response = session.post(
-            f"{XUI_URL}/panel/api/inbounds/updateClient/{client_id}",
-            headers=headers,
-            json=payload,
-            timeout=20
-        )
-
-        # 3x-ui v2 returns 404 for unauthenticated API requests; retry once.
-        if response.status_code in (401, 404):
-            if login_to_xui(force=True):
-                response = session.post(
-                    f"{XUI_URL}/panel/api/inbounds/updateClient/{client_id}",
-                    headers=headers,
-                    json=payload,
-                    timeout=20
-                )
-
-        response.raise_for_status()
-
-        data = response.json()
-        if not data.get("success"):
-            return False, f"Error updating client: {data.get('msg', 'Unknown error')}"
-
+        details = _api_request('get', f"/panel/api/clients/get/{quote(email, safe='')}")
+        client = dict(details['client'])
+        if client.get('uuid') != client_id:
+            raise ValueError("Client UUID does not match the requested service")
+        client['id'] = client.pop('uuid')
+        # Read records use a numeric id and serialized tunnel addresses; writes use the protocol UUID.
+        for key in ('createdAt', 'updatedAt'):
+            if key in client:
+                client[{'createdAt': 'created_at', 'updatedAt': 'updated_at'}[key]] = client.pop(key)
+        if isinstance(client.get('allowedIPs'), str):
+            client['allowedIPs'] = [ip.strip() for ip in client['allowedIPs'].split(',') if ip.strip()]
+        if isinstance(client.get('reverse'), str):
+            client['reverse'] = json.loads(client['reverse']) if client['reverse'] else None
+        if details.get('tunnelAllowedIPs'):
+            client['allowedIPsByInbound'] = details['tunnelAllowedIPs']
+        current_total = int(client.get('totalGB', 0))
+        if current_total == 0 and additional_gb > 0 and not unlimited:
+            raise ValueError("نمیتوان به پلن نامحدود حجم اضافه کرد")
+        client['totalGB'] = 0 if unlimited else current_total + int(additional_gb * 1024 ** 3)
+        if limit_ip is not None:
+            client['limitIp'] = int(limit_ip)
+        duration = new_expiry_time_ms if new_expiry_time_ms is not None else timedelta(days=31)
+        if isinstance(duration, timedelta):
+            client['expiryTime'] = max(int(client.get('expiryTime', 0)), int(time.time() * 1000)) + int(duration.total_seconds() * 1000)
+        else:
+            client['expiryTime'] = _expiry_time_ms(duration)
+        client['enable'] = True
+        _api_request('post', f"/panel/api/clients/update/{quote(email, safe='')}", json=client)
         return True, None
+    except Exception as exc:
+        logger.error("Error extending client: %s", exc)
+        return False, str(exc)
 
-    except Exception as e:
-        logger.error(f"Error extending client: {e}")
-        return False, str(e)
 
 def get_all_clients():
-    """Get all clients from the XUI panel
-
-    Returns:
-        list: List of clients or None if error
-    """
-    if not ensure_authenticated():
-        return None
-
     try:
-        response = session.get(f"{XUI_URL}/panel/api/inbounds/list")
-
-        # 3x-ui v2 returns 404 for unauthenticated API requests; retry once.
-        if response.status_code in (401, 404):
-            if login_to_xui(force=True):
-                response = session.get(f"{XUI_URL}/panel/api/inbounds/list")
-            else:
-                return None
-
-        if not response.ok:
-            logger.error(f"Failed to get inbounds list: {response.status_code}")
-            return None
-
-        data = response.json()
-        if not data.get("success"):
-            logger.error(f"API error: {data.get('msg', 'Unknown error')}")
-            return None
-
-        all_clients = []
-        inbounds = data.get("obj", [])
-
-        for inbound in inbounds:
-            if str(inbound.get("id")) == str(INBOUND_ID):
-                settings = json.loads(inbound.get("settings", "{}"))
-                clients = settings.get("clients", [])
-
-                # Include the inbound ID with each client for reference
-                for client in clients:
-                    client["inboundId"] = inbound.get("id")
-
-                    # Get traffic information for this client
-                    if client.get("email"):
-                        traffic_info = get_client_status(client.get("email"))
-                        if traffic_info:
-                            client.update({
-                                "remaining_gb": traffic_info.get("remaining_gb"),
-                                "total_gb": traffic_info.get("total_gb"),
-                                "expiry_date": traffic_info.get("expiry_date"),
-                                "remaining_time_display": traffic_info.get("remaining_time_display"),
-                                "is_active": traffic_info.get("is_active")
-                            })
-
-                all_clients.extend(clients)
-
-        return all_clients
-    except Exception as e:
-        logger.error(f"Error getting all clients: {e}")
+        records = _api_request('get', '/panel/api/clients/list')
+        clients = []
+        for record in records:
+            if INBOUND_ID not in record.get('inboundIds', []):
+                continue
+            client = dict(record)
+            client['id'] = record.get('uuid')
+            client['inboundId'] = INBOUND_ID
+            client.update(_status({**record, **(record.get('traffic') or {})}))
+            clients.append(client)
+        return clients
+    except Exception as exc:
+        logger.error("Error getting clients: %s", exc)
         return None
+
 
 def delete_client(client_id):
-    """Delete a client by UUID
-
-    Args:
-        client_id (str): Client UUID to delete
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    if not ensure_authenticated():
-        return False, "Failed to login to XUI panel"
-
+    """Resolve the existing UUID-based app interface to the v3 email endpoint."""
     try:
-        response = session.post(f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{client_id}")
-
-        # 3x-ui v2 returns 404 for unauthenticated API requests; retry once.
-        if response.status_code in (401, 404):
-            if login_to_xui(force=True):
-                response = session.post(f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{client_id}")
-            else:
-                return False, "Authentication failed"
-
-        if not response.ok:
-            return False, f"API request failed with status code: {response.status_code}"
-
-        data = response.json()
-        if not data.get("success"):
-            return False, f"API error: {data.get('msg', 'Unknown error')}"
-
+        clients = get_all_clients()
+        if clients is None:
+            raise RuntimeError("Could not load clients")
+        matches = [client for client in clients if client['id'] == client_id]
+        if len(matches) != 1:
+            raise ValueError("Client UUID was not found or is ambiguous")
+        email = matches[0]['email']
+        _api_request('post', f"/panel/api/clients/del/{quote(email, safe='')}")
         return True, None
-    except Exception as e:
-        logger.error(f"Error deleting client: {e}")
-        return False, str(e)
+    except Exception as exc:
+        logger.error("Error deleting client: %s", exc)
+        return False, str(exc)

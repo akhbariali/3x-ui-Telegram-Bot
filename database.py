@@ -9,10 +9,9 @@ from config import DB_FILE
 logger = logging.getLogger(__name__)
 
 DEFAULT_VPN_PLANS = [
-    {'plan_key': 'gb_1', 'name': 'پلن یک', 'gb': 10, 'price': 120, 'sort_order': 1},
-    {'plan_key': 'gb_2', 'name': 'پلن دو', 'gb': 20, 'price': 220, 'sort_order': 2},
-    {'plan_key': 'gb_5', 'name': 'پلن سه', 'gb': 30, 'price': 300, 'sort_order': 3},
-    {'plan_key': 'infinity', 'name': 'تک کاربره نامحدود', 'gb': 0, 'price': 400, 'sort_order': 4},
+    {'plan_key': 'infinity_1', 'name': 'نامحدود یک کاربره', 'gb': 0, 'price': 150, 'limit_ip': 1, 'sort_order': 1},
+    {'plan_key': 'infinity_2', 'name': 'نامحدود دو کاربره', 'gb': 0, 'price': 250, 'limit_ip': 2, 'sort_order': 2},
+    {'plan_key': 'infinity_3', 'name': 'نامحدود سه کاربره', 'gb': 0, 'price': 350, 'limit_ip': 3, 'sort_order': 3},
 ]
 
 
@@ -40,19 +39,19 @@ def _seed_default_plans(cursor):
             # Update existing plan
             cursor.execute(
                 '''
-                UPDATE vpn_plans SET name = ?, gb = ?, price = ?, sort_order = ?, is_active = 1
+                UPDATE vpn_plans SET name = ?, gb = ?, price = ?, sort_order = ?, limit_ip = ?, is_active = 1
                 WHERE plan_key = ?
                 ''',
-                (plan['name'], plan['gb'], plan['price'], plan['sort_order'], plan['plan_key'])
+                (plan['name'], plan['gb'], plan['price'], plan['sort_order'], plan['limit_ip'], plan['plan_key'])
             )
         else:
             # Insert new plan
             cursor.execute(
                 '''
-                INSERT INTO vpn_plans (plan_key, name, gb, price, sort_order, is_active)
-                VALUES (?, ?, ?, ?, ?, 1)
+                INSERT INTO vpn_plans (plan_key, name, gb, price, sort_order, limit_ip, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, 1)
                 ''',
-                (plan['plan_key'], plan['name'], plan['gb'], plan['price'], plan['sort_order'])
+                (plan['plan_key'], plan['name'], plan['gb'], plan['price'], plan['sort_order'], plan['limit_ip'])
             )
 
 def init_db():
@@ -149,6 +148,7 @@ def init_db():
     plan_columns = [column_info[1] for column_info in cursor.fetchall()]
     for column_name, column_definition in (
         ('price', 'REAL DEFAULT 0'),
+        ('limit_ip', 'INTEGER DEFAULT 0'),
         ('sort_order', 'INTEGER DEFAULT 0'),
         ('is_active', 'BOOLEAN DEFAULT TRUE'),
         ('updated_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'),
@@ -224,6 +224,7 @@ def init_db():
         ('target_client_id', 'TEXT'),
         ('plan_key', 'TEXT'),
         ('plan_gb', 'REAL DEFAULT 0'),
+        ('plan_limit_ip', 'INTEGER'),
     ):
         if column_name not in payment_columns:
             logger.info("Adding %s column to payments table", column_name)
@@ -749,15 +750,18 @@ def log_status_check(config_id, remaining_gb, remaining_days):
     conn.commit()
     conn.close()
 
-def save_payment_request(user_id, plan_name, file_id, payment_type='service', amount=0, target_email=None, target_client_id=None, plan_key=None, plan_gb=None):
+def save_payment_request(user_id, plan_name, file_id, payment_type='service', amount=0, target_email=None, target_client_id=None, plan_key=None, plan_gb=None, plan_limit_ip=None):
     """Save a payment request"""
+    if plan_limit_ip is None and plan_key:
+        plan = get_vpn_plan(plan_key)
+        plan_limit_ip = plan['limit_ip'] if plan else None
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
     cursor.execute('''
-    INSERT INTO payments (user_id, plan, receipt_file_id, payment_type, amount, target_email, target_client_id, plan_key, plan_gb)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (user_id, plan_name, file_id, payment_type, amount, target_email, target_client_id, plan_key, plan_gb))
+    INSERT INTO payments (user_id, plan, receipt_file_id, payment_type, amount, target_email, target_client_id, plan_key, plan_gb, plan_limit_ip)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (user_id, plan_name, file_id, payment_type, amount, target_email, target_client_id, plan_key, plan_gb, plan_limit_ip))
 
     payment_id = cursor.lastrowid
     conn.commit()
@@ -775,7 +779,7 @@ def get_payment_record(payment_id):
         '''
         SELECT p.payment_id, p.user_id, p.plan, p.receipt_file_id, p.payment_type,
              COALESCE(p.amount, 0) AS amount, p.target_email, p.target_client_id,
-             p.plan_key, COALESCE(p.plan_gb, 0) AS plan_gb,
+             p.plan_key, p.plan_gb, p.plan_limit_ip,
                p.status, p.submitted_at, p.approved_at,
                u.username, u.first_name
         FROM payments p
@@ -1302,7 +1306,7 @@ def update_notification_sent(config_id):
     return True
 
 
-def update_config_total_gb(email, user_id, additional_gb, extend_days=30):
+def update_config_total_gb(email, user_id, additional_gb, extend_days=30, unlimited=False):
     """Update the total_gb value of a configuration after extension and extend expiry date
 
     Args:
@@ -1325,7 +1329,7 @@ def update_config_total_gb(email, user_id, additional_gb, extend_days=30):
         return False
 
     current_gb = result[0]
-    new_total_gb = current_gb + additional_gb
+    new_total_gb = 0 if unlimited else current_gb + additional_gb
 
     # Update the total_gb value and reset last_notified in the database
     # Resetting last_notified ensures users will get fresh notifications about their extended service
@@ -1346,7 +1350,7 @@ def get_vpn_plans(include_inactive=False):
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    query = 'SELECT plan_id, plan_key, name, gb, price, sort_order, is_active FROM vpn_plans'
+    query = 'SELECT plan_id, plan_key, name, gb, price, sort_order, is_active, limit_ip FROM vpn_plans'
     if not include_inactive:
         query += ' WHERE is_active = 1'
     query += ' ORDER BY sort_order ASC, plan_id ASC'
@@ -1365,7 +1369,7 @@ def get_vpn_plan(plan_key):
 
     cursor.execute(
         '''
-        SELECT plan_id, plan_key, name, gb, price, sort_order, is_active
+        SELECT plan_id, plan_key, name, gb, price, sort_order, is_active, limit_ip
         FROM vpn_plans
         WHERE plan_key = ?
         ''',

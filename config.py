@@ -38,6 +38,7 @@ ADMIN_IDS = [int(x.strip()) for x in _admin_ids.split(",") if x.strip()]
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_ID = os.getenv("BOT_ID", "")
 XUI_URL = os.getenv("XUI_URL", "")
+XUI_API_TOKEN = os.getenv("XUI_API_TOKEN", "").strip()
 XUI_USERNAME = os.getenv("XUI_USERNAME", "admin")
 XUI_PASSWORD = os.getenv("XUI_PASSWORD", "")
 INBOUND_ID = int(os.getenv("INBOUND_ID", os.getenv("INBOUND", "1")))

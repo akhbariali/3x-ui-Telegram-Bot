@@ -11,7 +11,7 @@ def response(status=200, body=None):
     result = requests.Response()
     result.status_code = status
     result._content = json.dumps(body if body is not None else {'success': True}).encode()
-    result.url = 'https://panel.example/panel/api/inbounds/addClient'
+    result.url = 'https://panel.example/panel/api/clients/add'
     return result
 
 
@@ -19,12 +19,15 @@ class AuthenticationTests(unittest.TestCase):
     def setUp(self):
         self.patches = [
             patch.object(api, 'session'),
+            patch.object(api, 'XUI_API_TOKEN', ''),
+            patch.object(api, '_csrf_token', None),
             patch.object(api, '_session_authenticated', True),
             patch.object(api, '_last_login_time', time.time()),
         ]
         self.session = self.patches[0].start()
         for item in self.patches[1:]:
             item.start()
+        self.session.get.return_value = response(body={'success': True, 'obj': 'csrf-token'})
         self.addCleanup(patch.stopall)
 
     def test_expired_session_logs_in_again(self):
@@ -44,7 +47,7 @@ class AuthenticationTests(unittest.TestCase):
         self.assertFalse(api.login_to_xui(force=True))
 
     def test_create_recovers_from_unauthenticated_responses(self):
-        for status in (401, 404):
+        for status in (401, 403, 404):
             with self.subTest(status=status):
                 self.session.post.side_effect = [response(status), response(), response()]
                 client_id, error = api.create_client('test@example.com', 1024, 1900000000000)
@@ -78,9 +81,10 @@ class AuthenticationTests(unittest.TestCase):
         self.assertEqual(api.get_client_status('test@example.com')['total_gb'], 1)
 
     def test_extension_recovers_from_404(self):
-        self.session.get.return_value = response(body={
-            'success': True, 'obj': {'total': 1073741824, 'expiryTime': 1900000000000}
-        })
+        self.session.get.side_effect = lambda url, **kw: response(body={'success': True, 'obj':
+            'csrf-token' if url.endswith('/csrf-token') else {'client': {
+                'uuid': 'test-id', 'email': 'test@example.com', 'totalGB': 1073741824,
+                'expiryTime': 1900000000000, 'limitIp': 2, 'subId': 'sub'}, 'inboundIds': [api.INBOUND_ID]}})
         self.session.post.side_effect = [response(404), response(), response()]
         self.assertEqual(api.extend_client('test@example.com', 'test-id', 1), (True, None))
 
@@ -96,6 +100,9 @@ class AuthenticationTests(unittest.TestCase):
         self.session.post.assert_not_called()
 
     def test_delete_recovers_from_404(self):
+        self.session.get.side_effect = lambda url, **kw: response(body={'success': True, 'obj':
+            'csrf-token' if url.endswith('/csrf-token') else [
+                {'uuid': 'test-id', 'email': 'alice', 'inboundIds': [api.INBOUND_ID]}]})
         self.session.post.side_effect = [response(404), response(), response()]
         self.assertEqual(api.delete_client('test-id'), (True, None))
 

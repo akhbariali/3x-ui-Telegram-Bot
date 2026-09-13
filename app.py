@@ -391,7 +391,7 @@ def configs_view():
                 }
             )
 
-    return render_template("configs.html", configs=rendered)
+    return render_template("configs.html", configs=rendered, plans=build_vpn_plans())
 
 
 @app.route("/free-trial", methods=["POST"])
@@ -492,59 +492,20 @@ def extend_config_request():
 
     user_id = current_user_id()
     email = request.form.get("email", "").strip()
-    gb_amount_raw = request.form.get("gb_amount", "").strip()
     receipt_text = request.form.get("receipt", "").strip()
-
-    if not gb_amount_raw.isdigit() or not receipt_text:
+    plan_key = request.form.get("plan_key", "").strip()
+    plan = build_vpn_plans().get(plan_key)
+    if not plan or not receipt_text:
         flash("Invalid extension request.", "error")
         return redirect(url_for("configs_view"))
-
-    gb_amount = int(gb_amount_raw)
-    policy = get_service_policy()
-    client_id = None
-    current_total_gb = None
-    for conf in get_user_configs(user_id):
-        if conf[1] == email:
-            client_id = conf[2]
-            current_total_gb = float(conf[3])
-            break
-
+    client_id = next((conf[2] for conf in get_user_configs(user_id) if conf[1] == email), None)
     if not client_id:
         flash("Config not found.", "error")
         return redirect(url_for("configs_view"))
-
-    if policy['max_config_gb'] > 0 and current_total_gb is not None and current_total_gb + gb_amount > policy['max_config_gb']:
-        flash(f"This extension would exceed the configured limit of {policy['max_config_gb']} GB.", "error")
-        return redirect(url_for("configs_view"))
-
-    # Support selecting a named plan for extension (admin-managed plans)
-    plan_key = request.form.get("plan_key", "").strip()
-    plans = build_vpn_plans(get_service_policy())
-    if plan_key:
-        if plan_key not in plans:
-            flash("Invalid plan selected.", "error")
-            return redirect(url_for("configs_view"))
-        plan = plans[plan_key]
-        plan_gb = int(plan.get("gb", gb_amount))
-        amount = plan.get("price")
-        plan_name = f"تمدید {plan_gb}GB"
-        receipt_payload = f"EXT::{email}::{client_id}::{receipt_text}"
-        payment_id = save_payment_request(
-            user_id,
-            plan_name,
-            receipt_payload,
-            "web",
-            amount,
-            None,
-            None,
-            plan_key=plan_key,
-            plan_gb=plan_gb,
-        )
-    else:
-        # Keep extension details encoded in plan+receipt so it survives process restarts.
-        plan_name = f"تمدید {gb_amount}GB"
-        receipt_payload = f"EXT::{email}::{client_id}::{receipt_text}"
-        payment_id = save_payment_request(user_id, plan_name, receipt_payload, "web")
+    payment_id = save_payment_request(
+        user_id, f"تمدید {plan['name']}", receipt_text, "extension", plan['price'],
+        email, client_id, plan_key=plan_key, plan_gb=plan['gb'], plan_limit_ip=plan['limit_ip'],
+    )
     flash(f"Extension payment request #{payment_id} submitted.", "success")
     return redirect(url_for("configs_view"))
 
@@ -738,18 +699,9 @@ def approve_payment_web(payment_id):
     username = payment_record["username"]
     payment_type = payment_record["payment_type"] or "service"
     payment_amount = float(payment_record["amount"] or 0)
-    plan_gb = payment_amount if payment_amount > 0 else _parse_plan_gb(plan_name)
+    plan_gb = float(payment_record["plan_gb"]) if payment_record["plan_gb"] is not None else _parse_plan_gb(plan_name)
+    plan_limit_ip = payment_record["plan_limit_ip"]
     policy = get_service_policy()
-
-    # Normalize and log values for debugging approval issues
-    # try:
-    #     plan_gb = float(plan_gb)
-    # except Exception:
-    #     logger.warning("Could not coerce plan_gb to float: %r", plan_gb)
-    #     try:
-    #         plan_gb = float(int(plan_gb))
-    #     except Exception:
-    #         plan_gb = 0.0
 
     logger.info(
         "approve_payment_web: payment_id=%s plan_name=%r plan_gb=%s policy_max=%s",
@@ -792,14 +744,14 @@ def approve_payment_web(payment_id):
             if not status:
                 raise RuntimeError("Could not find client information")
 
-            if policy['max_config_gb'] > 0 and status['total_gb'] + plan_gb > policy['max_config_gb']:
+            if plan_gb > 0 and policy['max_config_gb'] > 0 and status['total_gb'] + plan_gb > policy['max_config_gb']:
                 raise RuntimeError(f"Extension exceeds the configured limit of {policy['max_config_gb']} GB")
 
-            success, error_msg = extend_client(extension_email, extension_client_id, plan_gb, policy['global_expiry_time_ms'])
+            success, error_msg = extend_client(extension_email, extension_client_id, plan_gb, timedelta(days=31), limit_ip=plan_limit_ip, unlimited=plan_gb == 0)
             if not success:
                 raise RuntimeError(error_msg or "Failed to extend client")
 
-            update_config_total_gb(extension_email, user_id, plan_gb)
+            update_config_total_gb(extension_email, user_id, plan_gb, unlimited=plan_gb == 0)
             update_payment_status(payment_id, "approved")
             flash(f"Extension approved for {extension_email}.", "success")
         else:
@@ -815,7 +767,7 @@ def approve_payment_web(payment_id):
             total_bytes = int(round(plan_gb * (1024 ** 3)))
             expiry_time = policy['global_expiry_time_ms']
 
-            client_id, error = create_client(email, total_bytes, expiry_time)
+            client_id, error = create_client(email, total_bytes, timedelta(days=31), limit_ip=plan_limit_ip or 0)
             if error:
                 raise RuntimeError(error)
 

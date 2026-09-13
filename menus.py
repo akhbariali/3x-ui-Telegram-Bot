@@ -83,7 +83,7 @@ def get_vpn_extend_plans_keyboard(email, current_total_gb=None):
             continue
 
         gb_label = f"{plan['gb']:g} گیگ" if plan['gb'] > 0 else "نامحدود"
-        label = f"➕ {gb_label} | {_format_price_toman(plan['price'])}"
+        label = f"➕ {plan['name']} | {gb_label} | {_format_price_toman(plan['price'])}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"extend_plan_{plan_key}")])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data=f"status_{email}")])
     return keyboard

@@ -9,7 +9,7 @@
       <label>{{ t('buy_service') }}
         <select name="plan_key" required>
           {% for key, plan in plans.items() %}
-          <option value="{{ key }}">{{ plan.name }} ({{ plan.gb }}GB)</option>
+          <option value="{{ key }}">{{ plan.name }} | {{ plan.price|int }} تومان | ۳۱ روز</option>
           {% endfor %}
         </select>
       </label>

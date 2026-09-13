@@ -23,11 +23,7 @@ from telegram import MenuButtonCommands
 
 from client_management import show_all_clients, confirm_delete_client, delete_client_handler, cancel_delete_client
 # Import our modules
-<<<<<<< HEAD
-from config import BOT_TOKEN, ADMIN_IDS, BOT_ID, IPDOMAIN, PORT, VLESS_TEXT,SUB_PORT, SUB_PATH, HOST, SNI, DB_FILE, ALLOW_BUY, get_payment_msg 
-=======
 from config import BOT_TOKEN, ADMIN_IDS, BOT_ID, IPDOMAIN, PORT, VLESS_TEXT,SUB_PORT, SUB_PATH, HOST, SNI, DB_FILE, ALLOW_BUY, get_payment_msg
->>>>>>> f600afe (authentication problem solved!)
 from database import (
     init_db, get_or_create_user, get_user_configs, save_new_config,
     update_config_active_status, get_client_id_by_email, check_trial_usage,
@@ -154,7 +150,7 @@ def _parse_referrer_arg(args):
     return referrer_user_id if referrer_user_id > 0 else None
 
 
-def _build_order(kind, label, gb, amount, back_callback, email=None, client_id=None, plan_key=None):
+def _build_order(kind, label, gb, amount, back_callback, email=None, client_id=None, plan_key=None, limit_ip=None):
     """Store the pending purchase or extension request in user_data."""
     return {
         'kind': kind,
@@ -165,6 +161,7 @@ def _build_order(kind, label, gb, amount, back_callback, email=None, client_id=N
         'email': email,
         'client_id': client_id,
         'plan_key': plan_key,
+        'limit_ip': limit_ip,
     }
 
 
@@ -238,11 +235,11 @@ async def _fulfill_order_with_wallet(query, user_id, context, order):
             if not status:
                 raise Exception("خطا در دریافت اطلاعات سرویس فعلی")
 
-            success, error_msg = extend_client(email, client_id, plan_gb, timedelta(days=31))
+            success, error_msg = extend_client(email, client_id, plan_gb, timedelta(days=31), limit_ip=order.get('limit_ip'), unlimited=plan_gb == 0)
             if not success:
                 raise Exception(f"خطا در تمدید سرویس: {error_msg}")
 
-            if not update_config_total_gb(email, user_id, plan_gb):
+            if not update_config_total_gb(email, user_id, plan_gb, unlimited=plan_gb == 0):
                 logger.warning(f"Failed to update database for wallet extension {email}")
 
             sub_link = generate_sub_link(status['subId'])
@@ -269,7 +266,7 @@ async def _fulfill_order_with_wallet(query, user_id, context, order):
 
             total_bytes = int(round(plan_gb * (1024 ** 3)))
 
-            client_id, error = create_client(email, total_bytes, timedelta(days=31))
+            client_id, error = create_client(email, total_bytes, timedelta(days=31), limit_ip=order.get('limit_ip') or 0)
             if error:
                 raise Exception(f"خطا در ایجاد کانفیگ: {error}")
 
@@ -626,7 +623,7 @@ async def handle_plan_selection(query, plan_data, user_id, context: ContextTypes
         await query.edit_message_text("پلن نامعتبر است.", reply_markup=reply_markup)
         return
 
-    order = _build_order('service', plan['name'], plan['gb'], plan['price'], 'buy_service', plan_key=plan_key)
+    order = _build_order('service', plan['name'], plan['gb'], plan['price'], 'buy_service', plan_key=plan_key, limit_ip=plan['limit_ip'])
     await prompt_payment_method(query, context, order)
 
 async def handle_free_trial(query, data, user_id, context: ContextTypes.DEFAULT_TYPE):
@@ -756,7 +753,8 @@ async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_email=order.get('email'),
             target_client_id=order.get('client_id'),
             plan_key=order.get('plan_key'),
-            plan_gb=order.get('gb')
+            plan_gb=order.get('gb'),
+            plan_limit_ip=order.get('limit_ip')
         )
         await _send_payment_notification(context, payment_id, update.effective_user, order, photo.file_id, payment_type)
 
@@ -1656,8 +1654,9 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
     payment_type = payment_record['payment_type'] or 'service'
     payment_amount = float(payment_record['amount'] or 0)
     plan_gb = float(payment_record['plan_gb'] or 0)
-    if plan_gb <= 0:
+    if payment_record['plan_gb'] is None:
         plan_gb = _parse_plan_gb(plan_name)
+    plan_limit_ip = payment_record['plan_limit_ip']
 
     if payment_type == 'wallet_topup':
         success, new_balance = adjust_wallet_balance(user_id, payment_amount)
@@ -1716,13 +1715,13 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
                 raise Exception("خطا در دریافت اطلاعات سرویس فعلی")
 
             # Extend the client service
-            success, error_msg = extend_client(extension_email, extension_client_id, plan_gb, timedelta(days=31))
+            success, error_msg = extend_client(extension_email, extension_client_id, plan_gb, timedelta(days=31), limit_ip=plan_limit_ip, unlimited=plan_gb == 0)
 
             if not success:
                 raise Exception(f"خطا در تمدید سرویس: {error_msg}")
 
             # Update the database with the new total GB amount
-            db_update_success = update_config_total_gb(extension_email, user_id, plan_gb)
+            db_update_success = update_config_total_gb(extension_email, user_id, plan_gb, unlimited=plan_gb == 0)
             if not db_update_success:
                 logger.warning(f"Failed to update database for config {extension_email} after extension")
 
@@ -1769,7 +1768,7 @@ async def approve_payment(query, payment_id, context: ContextTypes.DEFAULT_TYPE)
             total_bytes = int(round(plan_gb * (1024 ** 3)))  # Convert GB to bytes
 
             # Create the client on the VPN server
-            client_id, error = create_client(email, total_bytes, timedelta(days=31))
+            client_id, error = create_client(email, total_bytes, timedelta(days=31), limit_ip=plan_limit_ip or 0)
 
             if error:
                 raise Exception(f"خطا در ایجاد کانفیگ: {error}")
@@ -2025,8 +2024,8 @@ async def handle_extend_selection(query, data, user_id, context: ContextTypes.DE
         await query.edit_message_text("خطا در بازیابی اطلاعات کانفیگ.", reply_markup=InlineKeyboardMarkup(get_back_to_main_button()))
         return
 
-    order_label = "تمدید نامحدود" if gb_amount == 0 else f"تمدید {gb_amount:g}GB"
-    order = _build_order('extension', order_label, gb_amount, selected_plan['price'], f"status_{email}", email=email, client_id=client_id, plan_key=plan_key)
+    order_label = f"تمدید {selected_plan['name']}"
+    order = _build_order('extension', order_label, gb_amount, selected_plan['price'], f"status_{email}", email=email, client_id=client_id, plan_key=plan_key, limit_ip=selected_plan['limit_ip'])
     await prompt_payment_method(query, context, order)
 
     # Log the extension request
