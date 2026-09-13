@@ -37,7 +37,7 @@ def login_to_xui(force=False):
     data = {"username": XUI_USERNAME, "password": XUI_PASSWORD}
     try:
         response = session.post(url, json=data, timeout=20)
-        if response.ok:
+        if response.ok and response.json().get("success") is True:
             _session_authenticated = True
             _last_login_time = current_time
             logger.info("Successfully logged in to XUI panel")
@@ -57,13 +57,7 @@ def ensure_authenticated():
     Returns:
         bool: True if authenticated, False otherwise
     """
-    global _session_authenticated
-
-    # Try using current session
-    if _session_authenticated:
-        return True
-
-    # Session not authenticated, attempt login
+    # login_to_xui checks both the authentication flag and session age.
     return login_to_xui()
 
 def get_client_status(email):
@@ -72,8 +66,8 @@ def get_client_status(email):
         return None
 
     response = session.get(f"{XUI_URL}/panel/api/inbounds/getClientTraffics/{email}")
-    # If unauthorized, try logging in again and retry
-    if response.status_code == 401:
+    # 3x-ui v2 returns 404 for unauthenticated API requests; retry once.
+    if response.status_code in (401, 404):
         if login_to_xui(force=True):
             response = session.get(f"{XUI_URL}/panel/api/inbounds/getClientTraffics/{email}")
         else:
@@ -123,6 +117,7 @@ def get_client_status(email):
         logger.error(f"Error parsing client status: {e}")
         return None
 
+<<<<<<< HEAD
 def _expiry_time_ms(duration):
     if isinstance(duration, timedelta):
         return int((datetime.now() + duration).timestamp() * 1000)
@@ -130,16 +125,39 @@ def _expiry_time_ms(duration):
 
 
 def create_client(email, total_gb, expiry_time_ms=None):
+=======
+def _normalize_expiry_time(expiry_time_ms):
+    """Normalize expiry time to a millisecond timestamp.
+
+    If the expiry time is not provided or invalid, use 30 days from now.
+    """
+    try:
+        expiry_time_ms = int(expiry_time_ms)
+    except (TypeError, ValueError):
+        expiry_time_ms = 0
+
+    if expiry_time_ms <= 0:
+        expiry_time_ms = int((datetime.now() + timedelta(days=30)).timestamp() * 1000)
+
+    return expiry_time_ms
+
+
+def create_client(email, total_gb, expiry_time_ms):
+>>>>>>> f600afe (authentication problem solved!)
     """Create a new client in the XUI panel"""
     if not ensure_authenticated():
         return None, "Failed to login to XUI panel"
 
     client_id = str(uuid.uuid4())
     total_gb = int(total_gb)
+<<<<<<< HEAD
     if expiry_time_ms is None:
         expiry_time_ms = _expiry_time_ms(timedelta(days=31))
     else:
         expiry_time_ms = _expiry_time_ms(expiry_time_ms)
+=======
+    expiry_time_ms = _normalize_expiry_time(expiry_time_ms)
+>>>>>>> f600afe (authentication problem solved!)
 
     settings = {
         "clients": [
@@ -175,8 +193,8 @@ def create_client(email, total_gb, expiry_time_ms=None):
             json=payload,
             timeout=20
         )
-        # If unauthorized, try logging in again and retry
-        if response.status_code == 401:
+        # 3x-ui v2 returns 404 for unauthenticated API requests; retry once.
+        if response.status_code in (401, 404):
             if login_to_xui(force=True):
                 response = session.post(
                     f"{XUI_URL}/panel/api/inbounds/addClient",
@@ -236,7 +254,12 @@ def extend_client(email, client_id, additional_gb, new_expiry_time_ms=None):
     elif new_expiry_time_ms is None:
         expiry_time_ms = _expiry_time_ms(timedelta(days=31))
     else:
+<<<<<<< HEAD
         expiry_time_ms = _expiry_time_ms(new_expiry_time_ms)
+=======
+        expiry_time_ms = _normalize_expiry_time(new_expiry_time_ms)
+
+>>>>>>> f600afe (authentication problem solved!)
 
     # Prepare the settings for client update
     settings = {
@@ -275,8 +298,8 @@ def extend_client(email, client_id, additional_gb, new_expiry_time_ms=None):
             timeout=20
         )
 
-        # If unauthorized, try logging in again and retry
-        if response.status_code == 401:
+        # 3x-ui v2 returns 404 for unauthenticated API requests; retry once.
+        if response.status_code in (401, 404):
             if login_to_xui(force=True):
                 response = session.post(
                     f"{XUI_URL}/panel/api/inbounds/updateClient/{client_id}",
@@ -309,8 +332,8 @@ def get_all_clients():
     try:
         response = session.get(f"{XUI_URL}/panel/api/inbounds/list")
 
-        # If unauthorized, try logging in again and retry
-        if response.status_code == 401:
+        # 3x-ui v2 returns 404 for unauthenticated API requests; retry once.
+        if response.status_code in (401, 404):
             if login_to_xui(force=True):
                 response = session.get(f"{XUI_URL}/panel/api/inbounds/list")
             else:
@@ -371,8 +394,8 @@ def delete_client(client_id):
     try:
         response = session.post(f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{client_id}")
 
-        # If unauthorized, try logging in again and retry
-        if response.status_code == 401:
+        # 3x-ui v2 returns 404 for unauthenticated API requests; retry once.
+        if response.status_code in (401, 404):
             if login_to_xui(force=True):
                 response = session.post(f"{XUI_URL}/panel/api/inbounds/{INBOUND_ID}/delClient/{client_id}")
             else:

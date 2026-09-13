@@ -11,6 +11,8 @@ SNI=domain
 PORT=443
 DB_FILE=xui_bot_.db
 ALLOW_BUY=true
+# Use semicolon, comma, or newline to define multiple payment destinations.
+# Example: PAYMENT_MSG=card1;card2;card3
 PAYMENT_MSG=for example your bank card number or payment link
 BOT_ID=vpnbot
 VLESS_TEXT=type=xhttp&encryption=none&path=%2F&host=qq.ir&mode=auto&security=tls
